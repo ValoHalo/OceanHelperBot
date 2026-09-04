@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ocean-helper-bot"
+version = "0.1.0"
+description = "An extensible Telegram group helper bot"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    "httpx[socks]>=0.27,<1",
+    "python-dotenv>=1.0,<2",
+    "python-telegram-bot>=21.10,<23",
+]
+
+[project.scripts]
+ocean-helper-bot = "ocean_helper_bot.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ocean_helper_bot"]
