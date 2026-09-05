@@ -2,7 +2,11 @@ import logging
 
 import httpx
 
-from ocean_helper_bot.features.link_cleaner.processors import PROCESSORS
+from ocean_helper_bot.features.link_cleaner.processors import (
+    PROCESSORS,
+    TRACKING_PARAMETER_PROCESSOR,
+    to_desktop_url,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,15 +33,18 @@ async def clean_links(
         proxy=proxy_url,
     ) as client:
         for source_url in source_urls:
+            candidate_url = to_desktop_url(source_url)
             processor = next(
-                (candidate for candidate in PROCESSORS if candidate.accepts(source_url)),
+                (candidate for candidate in PROCESSORS if candidate.accepts(candidate_url)),
                 None,
             )
             if processor is None:
                 continue
 
             try:
-                cleaned_url = await processor.clean(source_url, client)
+                cleaned_url = await processor.clean(candidate_url, client)
+                if cleaned_url is None and candidate_url != source_url:
+                    cleaned_url = await TRACKING_PARAMETER_PROCESSOR.clean(candidate_url, client)
             except (httpx.HTTPError, ValueError):
                 LOGGER.warning("Could not clean URL from %s", processor.name, exc_info=True)
                 continue

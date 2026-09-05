@@ -14,6 +14,7 @@ from telegram.error import TelegramError
 LOGGER = logging.getLogger(__name__)
 GITHUB_API_URL = "https://api.github.com"
 GITHUB_PAGE_SIZE = 100
+TELEGRAM_MESSAGE_LIMIT = 4096
 
 
 class GitHubAPIError(RuntimeError):
@@ -241,13 +242,19 @@ class GitHubWatcher:
         commits: list[dict[str, Any]],
         releases: list[dict[str, Any]],
     ) -> None:
-        for commit in reversed(self._items_after(commits, "sha", subscription.last_commit_sha)):
-            await self._send_commit(subscription, commit)
-            self._update_cursor(subscription, last_commit_sha=str(commit["sha"]))
+        new_commits = list(
+            reversed(self._items_after(commits, "sha", subscription.last_commit_sha))
+        )
+        if new_commits:
+            await self._send_commits(subscription, new_commits)
+            self._update_cursor(subscription, last_commit_sha=str(new_commits[-1]["sha"]))
 
-        for release in reversed(self._items_after(releases, "id", subscription.last_release_id)):
-            await self._send_release(subscription, release)
-            self._update_cursor(subscription, last_release_id=int(release["id"]))
+        new_releases = list(
+            reversed(self._items_after(releases, "id", subscription.last_release_id))
+        )
+        if new_releases:
+            await self._send_releases(subscription, new_releases)
+            self._update_cursor(subscription, last_release_id=int(new_releases[-1]["id"]))
 
     @staticmethod
     def _items_after(items: list[dict[str, Any]], key: str, cursor: Any) -> list[dict[str, Any]]:
@@ -301,7 +308,58 @@ class GitHubWatcher:
                 (value, subscription.chat_id, subscription.thread_id or 0, subscription.repository),
             )
 
-    async def _send_commit(self, subscription: Subscription, commit: dict[str, Any]) -> None:
+    async def _send_commits(
+        self,
+        subscription: Subscription,
+        commits: list[dict[str, Any]],
+    ) -> None:
+        if len(commits) > 1:
+            displayed_commits = commits[-GITHUB_PAGE_SIZE:]
+            omitted_count = len(commits) - len(displayed_commits)
+            header = (
+                f"<b>GitHub commits ({len(commits)})</b> · "
+                f"<code>{html.escape(subscription.repository)}</code>"
+            )
+            header_text = f"GitHub commits ({len(commits)}) · {subscription.repository}"
+            footer_text = (
+                f"{omitted_count} earlier commits omitted · view all"
+                if omitted_count
+                else ""
+            )
+            line_limit = (
+                TELEGRAM_MESSAGE_LIMIT
+                - len(header_text)
+                - len(displayed_commits)
+                - (len(footer_text) + 1 if footer_text else 0)
+            ) // len(displayed_commits)
+            lines: list[str] = []
+            for commit in displayed_commits:
+                details = commit.get("commit") or {}
+                author = str((details.get("author") or {}).get("name") or "Unknown")
+                author_limit = min(80, max(1, (line_limit - 13) // 3))
+                author = self._shorten(author, author_limit)
+                subject = str(details.get("message") or "").splitlines()[0] or "(no message)"
+                subject = self._shorten(subject, max(1, line_limit - 13 - len(author)))
+                sha = str(commit["sha"])
+                url = str(
+                    commit.get("html_url")
+                    or f"https://github.com/{subscription.repository}/commit/{sha}"
+                )
+                lines.append(
+                    f'• <a href="{html.escape(url, quote=True)}">'
+                    f"<code>{html.escape(sha[:7])}</code></a> "
+                    f"{html.escape(subject)} · {html.escape(author)}"
+                )
+            if footer_text:
+                url = f"https://github.com/{subscription.repository}/commits"
+                lines.append(
+                    f'<a href="{html.escape(url, quote=True)}">'
+                    f"{html.escape(footer_text)}</a>"
+                )
+            await self._send(subscription, f"{header}\n" + "\n".join(lines))
+            return
+
+        commit = commits[0]
         details = commit.get("commit") or {}
         author = (details.get("author") or {}).get("name") or "Unknown"
         subject = (str(details.get("message") or "").splitlines()[0] or "(no message)")[:1000]
@@ -315,7 +373,62 @@ class GitHubWatcher:
         )
         await self._send(subscription, text)
 
-    async def _send_release(self, subscription: Subscription, release: dict[str, Any]) -> None:
+    async def _send_releases(
+        self,
+        subscription: Subscription,
+        releases: list[dict[str, Any]],
+    ) -> None:
+        if len(releases) > 1:
+            displayed_releases = releases[-GITHUB_PAGE_SIZE:]
+            omitted_count = len(releases) - len(displayed_releases)
+            header = (
+                f"<b>GitHub releases ({len(releases)})</b> · "
+                f"<code>{html.escape(subscription.repository)}</code>"
+            )
+            header_text = f"GitHub releases ({len(releases)}) · {subscription.repository}"
+            footer_text = (
+                f"{omitted_count} earlier releases omitted · view all"
+                if omitted_count
+                else ""
+            )
+            line_limit = (
+                TELEGRAM_MESSAGE_LIMIT
+                - len(header_text)
+                - len(displayed_releases)
+                - (len(footer_text) + 1 if footer_text else 0)
+            ) // len(displayed_releases)
+            lines: list[str] = []
+            for release in displayed_releases:
+                tag = str(release.get("tag_name") or "untagged")
+                prerelease = " · prerelease" if release.get("prerelease") else ""
+                tag_limit = min(
+                    80,
+                    max(1, (line_limit - 5 - len(prerelease)) // 3),
+                )
+                tag = self._shorten(tag, tag_limit)
+                title = str(release.get("name") or tag).splitlines()[0] or tag
+                title = self._shorten(
+                    title,
+                    max(1, line_limit - 5 - len(prerelease) - len(tag)),
+                )
+                url = str(
+                    release.get("html_url")
+                    or f"https://github.com/{subscription.repository}/releases"
+                )
+                lines.append(
+                    f'• <a href="{html.escape(url, quote=True)}">{html.escape(title)}</a> '
+                    f"(<code>{html.escape(tag)}</code>){prerelease}"
+                )
+            if footer_text:
+                url = f"https://github.com/{subscription.repository}/releases"
+                lines.append(
+                    f'<a href="{html.escape(url, quote=True)}">'
+                    f"{html.escape(footer_text)}</a>"
+                )
+            await self._send(subscription, f"{header}\n" + "\n".join(lines))
+            return
+
+        release = releases[0]
         tag = str(release.get("tag_name") or "untagged")
         title = str(release.get("name") or tag)[:1000]
         url = str(release.get("html_url") or f"https://github.com/{subscription.repository}/releases")
@@ -326,6 +439,14 @@ class GitHubWatcher:
             f"(<code>{html.escape(tag)}</code>)"
         )
         await self._send(subscription, text)
+
+    @staticmethod
+    def _shorten(value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        if limit <= 3:
+            return value[:limit]
+        return f"{value[: limit - 3]}..."
 
     async def _send(self, subscription: Subscription, text: str) -> None:
         await self._bot.send_message(

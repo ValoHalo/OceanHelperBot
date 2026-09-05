@@ -7,6 +7,15 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 import httpx
 
 
+_DESKTOP_HOSTS = {
+    "item.m.jd.com": "item.jd.com",
+    "m.jd.com": "www.jd.com",
+    "detail.m.tmall.com": "detail.tmall.com",
+    "m.taobao.com": "www.taobao.com",
+    "m.bilibili.com": "www.bilibili.com",
+}
+
+
 class LinkProcessor(Protocol):
     name: str
 
@@ -34,6 +43,18 @@ def _host(url: str) -> str:
         return (urlsplit(url).hostname or "").lower().rstrip(".")
     except ValueError:
         return ""
+
+
+def to_desktop_url(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        source_host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return url
+    desktop_host = _DESKTOP_HOSTS.get(source_host)
+    if desktop_host is None:
+        return url
+    return urlunsplit((parsed.scheme, desktop_host, parsed.path, parsed.query, parsed.fragment))
 
 
 def _decoded(value: str, rounds: int = 2) -> str:
@@ -224,9 +245,11 @@ class TrackingParameterProcessor:
         )
 
 
+TRACKING_PARAMETER_PROCESSOR = TrackingParameterProcessor()
+
 PROCESSORS: tuple[LinkProcessor, ...] = (
     JdProcessor(),
     TaobaoProcessor(),
     BilibiliProcessor(),
-    TrackingParameterProcessor(),
+    TRACKING_PARAMETER_PROCESSOR,
 )
