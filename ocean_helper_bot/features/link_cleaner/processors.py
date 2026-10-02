@@ -152,6 +152,10 @@ class BilibiliProcessor:
     name = "bilibili"
     _hosts = {"b23.tv", "bilibili.com", "www.bilibili.com", "m.bilibili.com"}
     _bvid_pattern = re.compile(r"/video/(BV[0-9A-Za-z]{10})(?:[/?#]|$)", re.IGNORECASE)
+    _body_video_pattern = re.compile(
+        r"/video/BV[0-9A-Za-z]{10}(?=[/?#\s\"'<>]|$)[^\s\"'<>\\]*",
+        re.IGNORECASE,
+    )
 
     def accepts(self, url: str) -> bool:
         return _host(url) in self._hosts
@@ -165,14 +169,56 @@ class BilibiliProcessor:
             body = page.body
 
         for candidate in reversed(candidates):
-            match = self._bvid_pattern.search(urlsplit(candidate).path)
-            if match:
-                return f"https://www.bilibili.com/video/{match.group(1)}"
+            canonical_url = self._canonical_from_url(candidate, url)
+            if canonical_url:
+                return await TRACKING_PARAMETER_PROCESSOR.clean(canonical_url, client)
 
-        match = self._bvid_pattern.search(_decoded(body))
+        body = body.replace("\\/", "/")
+        match = self._body_video_pattern.search(body) or self._body_video_pattern.search(
+            _decoded(body, rounds=1)
+        )
         if match:
-            return f"https://www.bilibili.com/video/{match.group(1)}"
+            canonical_url = self._canonical_from_url(
+                f"https://www.bilibili.com{match.group(0)}", url
+            )
+            if canonical_url:
+                return await TRACKING_PARAMETER_PROCESSOR.clean(canonical_url, client)
         return None
+
+    @staticmethod
+    def _canonical_from_url(url: str, source_url: str) -> str | None:
+        parsed = urlsplit(url)
+        match = BilibiliProcessor._bvid_pattern.search(parsed.path)
+        if not match:
+            return None
+
+        query = parsed.query
+        if source_url != url:
+            playback_query = [
+                (name, value)
+                for name, value in parse_qsl(urlsplit(source_url).query, keep_blank_values=True)
+                if name in {"t", "p"}
+            ]
+            if playback_query:
+                playback_names = {name for name, _ in playback_query}
+                query = urlencode(
+                    [
+                        (name, value)
+                        for name, value in parse_qsl(query, keep_blank_values=True)
+                        if name not in playback_names
+                    ]
+                    + playback_query
+                )
+
+        return urlunsplit(
+            (
+                "https",
+                "www.bilibili.com",
+                f"/video/{match.group(1)}/",
+                query,
+                parsed.fragment,
+            )
+        )
 
 
 class TrackingParameterProcessor:
@@ -206,6 +252,7 @@ class TrackingParameterProcessor:
         "soc_trk",
         "source",
         "spm",
+        "spm_id_from",
         "srsltid",
         "ttclid",
         "twclid",

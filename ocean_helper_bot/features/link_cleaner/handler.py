@@ -66,7 +66,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await message.reply_text(
         links,
         parse_mode=ParseMode.HTML,
-        link_preview_options=LinkPreviewOptions(is_disabled=True),
+        link_preview_options=LinkPreviewOptions(is_disabled=False, url=cleaned_urls[0]),
         do_quote=True,
         message_thread_id=message.message_thread_id,
     )
