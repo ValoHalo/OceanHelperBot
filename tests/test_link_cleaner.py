@@ -2,6 +2,7 @@ import html
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import httpx
 from telegram import Bot, Message, Update
@@ -47,7 +48,7 @@ class RecordingTelegramRequest(BaseRequest):
 
 
 class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
-    async def _reply_payloads(self, text):
+    async def _reply_payloads(self, text=None, **message_fields):
         request = RecordingTelegramRequest()
         async with Bot(
             "123:offline-test-token",
@@ -63,6 +64,7 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
                     "text": text,
                     "message_thread_id": 27,
                     "is_topic_message": True,
+                    **message_fields,
                 },
                 bot,
             )
@@ -169,10 +171,192 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
                 "https://item.taobao.com/item.htm?id=12345678&spm=tracking",
                 "https://item.taobao.com/item.htm?id=12345678",
             ),
+            (
+                "https://fxtwitter.com.example.org/page?utm_source=share&custom=keep",
+                "https://fxtwitter.com.example.org/page?custom=keep",
+            ),
         )
         for source, expected in cases:
             with self.subTest(source=source):
                 self.assertEqual(await clean_links([source]), [expected])
+
+    async def test_social_links_are_converted_without_network_requests(self):
+        cases = (
+            (
+                "https://www.pixiv.net/en/artworks/12345678/2",
+                "https://www.phixiv.net/en/artworks/12345678/2",
+            ),
+            (
+                "https://pixiv.net/artworks/12345678",
+                "https://phixiv.net/artworks/12345678",
+            ),
+            (
+                "https://x.com/user/status/123456789/photo/3",
+                "https://fixupx.com/user/status/123456789/photo/3",
+            ),
+            (
+                "https://mobile.x.com/i/status/123456789",
+                "https://fixupx.com/i/status/123456789",
+            ),
+            (
+                "https://twitter.com/user/status/123456789/video/1",
+                "https://fxtwitter.com/user/status/123456789/video/1",
+            ),
+            (
+                "https://www.twitter.com/user/status/123456789",
+                "https://fxtwitter.com/user/status/123456789",
+            ),
+            (
+                "http://M.TWITTER.COM:80/user/status/123456789#reply",
+                "http://fxtwitter.com:80/user/status/123456789#reply",
+            ),
+        )
+        with patch(
+            "httpx.AsyncClient.send",
+            new=AsyncMock(side_effect=AssertionError("Unexpected network request")),
+        ) as send:
+            for source, expected in cases:
+                with self.subTest(source=source):
+                    self.assertEqual(await clean_links([source]), [expected])
+            send.assert_not_awaited()
+
+    async def test_social_cleanup_preserves_content_parameters(self):
+        cases = (
+            (
+                "https://www.pixiv.net/member_illust.php"
+                "?illust_id=12345678&mode=medium&utm_source=share&s=1&t=2#image",
+                "https://www.phixiv.net/member_illust.php"
+                "?illust_id=12345678&mode=medium&s=1&t=2#image",
+            ),
+            (
+                "https://x.com/user/status/123456789"
+                "?s=46&t=share-token&lang=ja&utm_source=share&custom=&custom=a%26b#reply",
+                "https://fixupx.com/user/status/123456789"
+                "?lang=ja&custom=&custom=a%26b#reply",
+            ),
+            (
+                "https://twitter.com/user/status/123456789?S=20&T=share-token&lang=en",
+                "https://fxtwitter.com/user/status/123456789?lang=en",
+            ),
+        )
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(await clean_links([source]), [expected])
+
+    async def test_existing_social_previews_are_skipped_without_reply(self):
+        urls = [
+            "https://phixiv.net/artworks/12345678?utm_source=share",
+            "https://www.phixiv.net/artworks/12345678?utm_source=share",
+            "https://fixupx.com/user/status/123456789?s=46&t=share-token&utm_source=share",
+            "https://fxtwitter.com/user/status/123456789?s=20&t=share-token&utm_source=share",
+            "https://g.fixupx.com/user/status/123456789?utm_source=share",
+            "https://d.fxtwitter.com/user/status/123456789?s=20&t=share-token",
+            "https://c.phixiv.net/artworks/12345678?utm_source=share",
+            "https://I.FXTWITTER.COM./user/status/123456789?utm_source=share",
+        ]
+        with patch(
+            "ocean_helper_bot.features.link_cleaner.service.httpx.AsyncClient",
+            side_effect=AssertionError("Preview links must be skipped before processing"),
+        ) as client:
+            self.assertEqual(await clean_links(urls), [])
+            client.assert_not_called()
+
+        self.assertEqual(await self._reply_payloads("\n".join(urls)), [])
+
+    async def test_social_conversion_ignores_other_hosts_and_credentials(self):
+        for url in (
+            "https://x.com.example.org/user/status/123456789",
+            "https://twitter.com.example.org/user/status/123456789",
+            "https://pixiv.net.example.org/artworks/12345678",
+            "https://notx.com/user/status/123456789",
+            "https://api.twitter.com/user/status/123456789",
+            "https://example.org/x.com/artworks/pixiv.net",
+            "https://example.org/?url=https%3A%2F%2Fx.com%2Fuser%2Fstatus%2F123456789",
+            "https://x.com@example.org/user/status/123456789",
+            "https://user:secret@x.com/user/status/123456789",
+            "ftp://twitter.com/user/status/123456789",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(await clean_links([url]), [])
+
+    async def test_social_conversion_is_idempotent_and_deduplicates(self):
+        expected_urls = [
+            "https://phixiv.net/artworks/12345678",
+            "https://fixupx.com/user/status/123456789",
+            "https://fxtwitter.com/user/status/123456789",
+        ]
+        self.assertEqual(
+            await clean_links(
+                [
+                    "https://pixiv.net/artworks/12345678",
+                    "https://x.com/user/status/123456789?s=46&t=one",
+                    "https://www.x.com/user/status/123456789?s=20&t=two",
+                    "https://twitter.com/user/status/123456789",
+                    *expected_urls,
+                    *(url + "?utm_source=share&custom=keep" for url in expected_urls),
+                ]
+            ),
+            expected_urls,
+        )
+        self.assertEqual(await clean_links(expected_urls), [])
+
+    async def test_social_reply_previews_converted_url_in_the_same_topic(self):
+        expected_urls = [
+            "https://fixupx.com/user/status/123456789?lang=ja&custom=one",
+            "https://www.phixiv.net/artworks/12345678",
+            "https://fxtwitter.com/user/status/123456789",
+        ]
+        payloads = await self._reply_payloads(
+            "https://x.com/user/status/123456789?s=46&t=share-token&lang=ja&custom=one\n"
+            "https://www.pixiv.net/artworks/12345678\n"
+            "https://twitter.com/user/status/123456789"
+        )
+        self.assertEqual(len(payloads), 1)
+        payload = payloads[0]
+        self.assertEqual(
+            payload["text"].splitlines(),
+            [
+                f'<a href="{html.escape(url, quote=True)}">{html.escape(url)}</a>'
+                for url in expected_urls
+            ],
+        )
+        self.assertEqual(payload["parse_mode"], "HTML")
+        self.assertEqual(
+            json.loads(payload["link_preview_options"]),
+            {"is_disabled": False, "url": expected_urls[0]},
+        )
+        self.assertEqual(json.loads(payload["reply_parameters"])["message_id"], 10)
+        self.assertEqual(int(payload["message_thread_id"]), 27)
+
+    async def test_social_links_in_captions_and_hidden_text_links(self):
+        source_url = "https://www.pixiv.net/artworks/12345678"
+        cases = (
+            {
+                "caption": source_url,
+                "caption_entities": [
+                    {"type": "url", "offset": 0, "length": len(source_url)},
+                ],
+            },
+            {
+                "text": "作品",
+                "entities": [
+                    {
+                        "type": "text_link",
+                        "offset": 0,
+                        "length": 2,
+                        "url": source_url,
+                    },
+                ],
+            },
+        )
+        for message_fields in cases:
+            with self.subTest(message_fields=message_fields):
+                payloads = await self._reply_payloads(**message_fields)
+                self.assertEqual(len(payloads), 1)
+                self.assertEqual(
+                    json.loads(payloads[0]["link_preview_options"]),
+                    {"is_disabled": False, "url": "https://www.phixiv.net/artworks/12345678"},
+                )
 
     async def test_reply_requests_preview_and_retains_the_topic_and_quote(self):
         payloads = await self._reply_payloads(VIDEO_URL + "?t=90&p=2&vd_source=tracking")

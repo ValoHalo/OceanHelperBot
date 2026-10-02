@@ -15,6 +15,8 @@ _DESKTOP_HOSTS = {
     "m.bilibili.com": "www.bilibili.com",
 }
 
+_SOCIAL_PREVIEW_HOSTS = {"phixiv.net", "fixupx.com", "fxtwitter.com"}
+
 
 class LinkProcessor(Protocol):
     name: str
@@ -43,6 +45,14 @@ def _host(url: str) -> str:
         return (urlsplit(url).hostname or "").lower().rstrip(".")
     except ValueError:
         return ""
+
+
+def is_social_preview_url(url: str) -> bool:
+    hostname = _host(url)
+    return any(
+        hostname == host or hostname.endswith(f".{host}")
+        for host in _SOCIAL_PREVIEW_HOSTS
+    )
 
 
 def to_desktop_url(url: str) -> str:
@@ -292,11 +302,59 @@ class TrackingParameterProcessor:
         )
 
 
+class SocialPreviewProcessor:
+    name = "social-preview"
+    _preview_hosts = {
+        "pixiv.net": "phixiv.net",
+        "www.pixiv.net": "www.phixiv.net",
+        "x.com": "fixupx.com",
+        "www.x.com": "fixupx.com",
+        "m.x.com": "fixupx.com",
+        "mobile.x.com": "fixupx.com",
+        "twitter.com": "fxtwitter.com",
+        "www.twitter.com": "fxtwitter.com",
+        "m.twitter.com": "fxtwitter.com",
+        "mobile.twitter.com": "fxtwitter.com",
+    }
+    _twitter_preview_hosts = {"fixupx.com", "fxtwitter.com"}
+    _twitter_tracking_names = {"s", "t"}
+
+    def accepts(self, url: str) -> bool:
+        return _host(url) in self._preview_hosts and urlsplit(url).scheme in {"http", "https"}
+
+    async def clean(self, url: str, client: httpx.AsyncClient) -> str | None:
+        parsed = urlsplit(url)
+        if parsed.username is not None or parsed.password is not None:
+            return None
+
+        preview_host = self._preview_hosts[_host(url)]
+        netloc = preview_host
+        if parsed.port is not None:
+            netloc += f":{parsed.port}"
+
+        query = parsed.query
+        if preview_host in self._twitter_preview_hosts:
+            original_query = parse_qsl(query, keep_blank_values=True)
+            clean_query = [
+                (name, value)
+                for name, value in original_query
+                if name.lower() not in self._twitter_tracking_names
+            ]
+            if clean_query != original_query:
+                query = urlencode(clean_query, doseq=True)
+
+        preview_url = urlunsplit(
+            (parsed.scheme, netloc, parsed.path, query, parsed.fragment)
+        )
+        return await TRACKING_PARAMETER_PROCESSOR.clean(preview_url, client)
+
+
 TRACKING_PARAMETER_PROCESSOR = TrackingParameterProcessor()
 
 PROCESSORS: tuple[LinkProcessor, ...] = (
     JdProcessor(),
     TaobaoProcessor(),
     BilibiliProcessor(),
+    SocialPreviewProcessor(),
     TRACKING_PARAMETER_PROCESSOR,
 )

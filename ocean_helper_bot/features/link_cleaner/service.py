@@ -5,6 +5,7 @@ import httpx
 from ocean_helper_bot.features.link_cleaner.processors import (
     PROCESSORS,
     TRACKING_PARAMETER_PROCESSOR,
+    is_social_preview_url,
     to_desktop_url,
 )
 
@@ -15,6 +16,10 @@ async def clean_links(
     source_urls: list[str],
     proxy_url: str | None = None,
 ) -> list[str]:
+    pending_urls = [url for url in source_urls if not is_social_preview_url(url)]
+    if not pending_urls:
+        return []
+
     cleaned_urls: list[str] = []
     timeout = httpx.Timeout(15.0, connect=10.0)
     headers = {
@@ -32,7 +37,7 @@ async def clean_links(
         headers=headers,
         proxy=proxy_url,
     ) as client:
-        for source_url in source_urls:
+        for source_url in pending_urls:
             candidate_url = to_desktop_url(source_url)
             processor = next(
                 (candidate for candidate in PROCESSORS if candidate.accepts(candidate_url)),

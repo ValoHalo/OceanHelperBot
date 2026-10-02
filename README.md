@@ -7,6 +7,9 @@
 - 京东：`3.cn`、`item.jd.com`、`item.m.jd.com`、`m.jd.com`
 - 淘宝和天猫：`e.tb.cn`、`m.tb.cn`、`m.taobao.com`、淘宝/天猫商品页
 - 哔哩哔哩：`b23.tv`、`m.bilibili.com`、哔哩哔哩视频页
+- Pixiv：`pixiv.net` → `phixiv.net`，`www.pixiv.net` → `www.phixiv.net`
+- X：`x.com` → `fixupx.com`，同时支持 `www.x.com`、`m.x.com`、`mobile.x.com`
+- Twitter：`twitter.com` → `fxtwitter.com`，同时支持 `www.twitter.com`、`m.twitter.com`、`mobile.twitter.com`
 - 其他 HTTP(S) 长链：删除常见跟踪参数，保留未知的功能参数
 
 已支持站点中具有明确对应关系的手机版页面会转换为 PC 版页面。回复中只包含清洗后的链接。同一条消息中有多个可清洗链接时，每行回复一个。链接没有变化或短链解析失败时不会回复。
