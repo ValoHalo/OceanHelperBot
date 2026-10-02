@@ -9,7 +9,7 @@ from telegram import Bot, Message, Update
 from telegram.request import BaseRequest
 
 from ocean_helper_bot.features.link_cleaner.handler import handle_message
-from ocean_helper_bot.features.link_cleaner.processors import BilibiliProcessor
+from ocean_helper_bot.features.link_cleaner.processors import BilibiliProcessor, TaobaoProcessor
 from ocean_helper_bot.features.link_cleaner.service import clean_links
 
 
@@ -179,6 +179,80 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
         for source, expected in cases:
             with self.subTest(source=source):
                 self.assertEqual(await clean_links([source]), [expected])
+
+    async def test_taobao_links_preserve_sku_selection(self):
+        cases = (
+            (
+                "https://item.taobao.com/item.htm?id=12345678&skuid=9876543210&spm=tracking",
+                "https://item.taobao.com/item.htm?id=12345678&skuid=9876543210",
+            ),
+            (
+                "https://detail.tmall.com/item.htm?skuId=9876543210&id=12345678&utm_source=share",
+                "https://detail.tmall.com/item.htm?id=12345678&skuId=9876543210",
+            ),
+            (
+                "https://detail.m.tmall.com/item.htm?id=12345678&skuId=9876543210&spm=tracking",
+                "https://detail.tmall.com/item.htm?id=12345678&skuId=9876543210",
+            ),
+            (
+                "https://h5.m.taobao.com/awp/core/detail.htm?skuid=9876543210&id=12345678&spm=tracking",
+                "https://item.taobao.com/item.htm?id=12345678&skuid=9876543210",
+            ),
+        )
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assertEqual(await clean_links([source]), [expected])
+
+    async def test_taobao_sku_links_remain_distinct_and_need_no_repeat_reply(self):
+        urls = [
+            "https://item.taobao.com/item.htm?id=12345678&skuid=9876543210",
+            "https://item.taobao.com/item.htm?id=12345678&skuid=9876543211",
+        ]
+        self.assertEqual(await clean_links([url + "&spm=tracking" for url in urls]), urls)
+        self.assertEqual(await clean_links(urls), [])
+
+    async def test_taobao_short_link_redirect_preserves_sku(self):
+        for short_host, item_host in (
+            ("e.tb.cn", "item.taobao.com"),
+            ("m.tb.cn", "detail.tmall.com"),
+        ):
+            with self.subTest(short_host=short_host):
+                expected = f"https://{item_host}/item.htm?id=12345678&skuId=9876543210"
+
+                def respond(request):
+                    if request.url.host == short_host:
+                        return httpx.Response(302, headers={"Location": expected + "&spm=tracking"})
+                    return httpx.Response(200)
+
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(respond), follow_redirects=True
+                ) as client:
+                    result = await TaobaoProcessor().clean(f"https://{short_host}/test-item", client)
+                self.assertEqual(result, expected)
+
+    async def test_taobao_short_link_body_preserves_sku(self):
+        for item_host, query in (
+            ("item.taobao.com", "id=12345678&skuid=9876543210"),
+            ("detail.tmall.com", "skuId=9876543210&id=12345678"),
+        ):
+            target = f"https://{item_host}/item.htm?{query}&spm=tracking"
+            sku_name = "skuid" if item_host == "item.taobao.com" else "skuId"
+            expected = f"https://{item_host}/item.htm?id=12345678&{sku_name}=9876543210"
+            bodies = (
+                f'<a href="{html.escape(target, quote=True)}">item</a>',
+                json.dumps({"url": target}).replace("/", "\\/"),
+                f'<a href="{html.escape(target.removeprefix("https:"), quote=True)}">item</a>',
+            )
+            for body in bodies:
+                with self.subTest(body=body):
+                    transport = httpx.MockTransport(
+                        lambda request: httpx.Response(
+                            200, text=body, headers={"Content-Type": "text/html"}
+                        )
+                    )
+                    async with httpx.AsyncClient(transport=transport) as client:
+                        result = await TaobaoProcessor().clean("https://e.tb.cn/test-item", client)
+                    self.assertEqual(result, expected)
 
     async def test_social_links_are_converted_without_network_requests(self):
         cases = (

@@ -118,8 +118,8 @@ class TaobaoProcessor:
         "main.m.taobao.com",
     }
     _body_url_pattern = re.compile(
-        r"(?:https?:)?//(?P<host>detail(?:\.m)?\.tmall\.com|item\.taobao\.com)"
-        r"/[^\s\"'<>]*?[?&]id=(?P<id>\d{8,})",
+        r"(?:https?:)?//(?:detail(?:\.m)?\.tmall\.com|item\.taobao\.com)"
+        r"/[^\s\"'<>\\]*?[?&]id=\d{8,}[^\s\"'<>\\]*",
         re.IGNORECASE,
     )
 
@@ -141,8 +141,7 @@ class TaobaoProcessor:
 
         match = self._body_url_pattern.search(body)
         if match:
-            domain = "detail.tmall.com" if "tmall" in match.group("host").lower() else "item.taobao.com"
-            return f"https://{domain}/item.htm?id={match.group('id')}"
+            return self._canonical_from_url(match.group(0))
         return None
 
     @staticmethod
@@ -151,11 +150,14 @@ class TaobaoProcessor:
         hostname = (parsed.hostname or "").lower()
         if hostname not in TaobaoProcessor._item_hosts:
             return None
-        item_id = dict(parse_qsl(parsed.query)).get("id")
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+        item_id = dict(query).get("id")
         if not item_id or not item_id.isdigit():
             return None
         domain = "detail.tmall.com" if "tmall" in hostname else "item.taobao.com"
-        return f"https://{domain}/item.htm?id={item_id}"
+        kept_query = [("id", item_id)]
+        kept_query.extend((name, value) for name, value in query if name.lower() == "skuid")
+        return f"https://{domain}/item.htm?{urlencode(kept_query)}"
 
 
 class BilibiliProcessor:
