@@ -78,12 +78,12 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
         for url in (
             VIDEO_URL,
             VIDEO_URL + "?t=90&p=2",
-            VIDEO_URL + "?t=0&p=1&custom=&custom=one#reply",
+            VIDEO_URL + "?t=0&p=1#reply",
         ):
             with self.subTest(url=url):
                 self.assertEqual(await clean_links([url]), [])
 
-    async def test_tracking_cleanup_preserves_playback_and_other_functional_parameters(self):
+    async def test_strict_whitelist_preserves_only_playback_parameters(self):
         cases = (
             (
                 VIDEO_URL + "?spm_id_from=333.1007&vd_source=tracking&t=90&p=2#reply",
@@ -92,11 +92,11 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
             (
                 "http://m.bilibili.com/video/BV1SGad6WEWn"
                 "?t=0&utm_source=share&p=1&custom=&custom=one#reply",
-                VIDEO_URL + "?t=0&p=1&custom=&custom=one#reply",
+                VIDEO_URL + "?t=0&p=1#reply",
             ),
             (
                 VIDEO_URL + "?t=93.5&p=2&custom=%2Fvalue&share_source=copy",
-                VIDEO_URL + "?t=93.5&p=2&custom=%2Fvalue",
+                VIDEO_URL + "?t=93.5&p=2",
             ),
         )
         for source, expected in cases:
@@ -155,7 +155,7 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
                     result = await BilibiliProcessor().clean(
                         "https://b23.tv/test-video", client
                     )
-                self.assertEqual(result, VIDEO_URL + "?t=90&p=2&custom=a%26b#reply")
+                self.assertEqual(result, VIDEO_URL + "?t=90&p=2#reply")
 
     async def test_other_sites_keep_their_existing_cleaning_behavior(self):
         cases = (
@@ -300,13 +300,13 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
                 "https://www.pixiv.net/member_illust.php"
                 "?illust_id=12345678&mode=medium&utm_source=share&s=1&t=2#image",
                 "https://www.phixiv.net/member_illust.php"
-                "?illust_id=12345678&mode=medium&s=1&t=2#image",
+                "?illust_id=12345678&mode=medium#image",
             ),
             (
                 "https://x.com/user/status/123456789"
                 "?s=46&t=share-token&lang=ja&utm_source=share&custom=&custom=a%26b#reply",
                 "https://fixupx.com/user/status/123456789"
-                "?lang=ja&custom=&custom=a%26b#reply",
+                "?lang=ja#reply",
             ),
             (
                 "https://twitter.com/user/status/123456789?S=20&T=share-token&lang=en",
@@ -376,7 +376,7 @@ class LinkCleanerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_social_reply_previews_converted_url_in_the_same_topic(self):
         expected_urls = [
-            "https://fixupx.com/user/status/123456789?lang=ja&custom=one",
+            "https://fixupx.com/user/status/123456789?lang=ja",
             "https://www.phixiv.net/artworks/12345678",
             "https://fxtwitter.com/user/status/123456789",
         ]

@@ -8,6 +8,7 @@ from telegram.constants import MessageEntityType, ParseMode
 from telegram.ext import ContextTypes
 
 from ocean_helper_bot.features.link_cleaner.service import clean_links
+from ocean_helper_bot.features.link_cleaner.management import STORE_KEY, handle_input
 
 LOGGER = logging.getLogger(__name__)
 URL_PATTERN = re.compile(r"https?://[^\s<>\[\]`]+", re.IGNORECASE)
@@ -43,6 +44,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if message is None or (message.from_user and message.from_user.is_bot):
         return
 
+    if await handle_input(update, context):
+        return
+
     source_urls = _message_urls(message)
     if not source_urls:
         return
@@ -51,6 +55,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         cleaned_urls = await clean_links(
             source_urls,
             proxy_url=context.application.bot_data.get("proxy_url"),
+            store=context.application.bot_data.get(STORE_KEY),
         )
     except Exception:
         LOGGER.exception("Unexpected failure while cleaning message links")

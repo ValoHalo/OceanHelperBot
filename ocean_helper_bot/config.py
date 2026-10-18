@@ -11,6 +11,7 @@ class Settings:
     github_token: str | None = None
     github_watch_interval_seconds: int = 300
     github_state_path: Path = Path("data/github_watcher.sqlite3")
+    link_cleaner_state_path: Path = Path("data/link_cleaner.sqlite3")
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -44,4 +45,5 @@ class Settings:
             github_token=github_token,
             github_watch_interval_seconds=interval,
             github_state_path=state_path,
+            link_cleaner_state_path=Path(os.environ.get("LINK_CLEANER_STATE_PATH", "").strip() or "data/link_cleaner.sqlite3"),
         )

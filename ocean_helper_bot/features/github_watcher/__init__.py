@@ -44,6 +44,10 @@ async def start(application: Application) -> None:
         [
             BotCommand("start", "显示帮助"),
             BotCommand("health", "检查机器人是否在线"),
+            BotCommand("addlink", "添加链接规则（私聊）"),
+            BotCommand("replacelink", "修改替换域名（私聊）"),
+            BotCommand("whitelist", "修改参数白名单（私聊）"),
+            BotCommand("links", "管理链接规则（私聊）"),
             BotCommand("newintegration", "选择并关注仓库"),
             BotCommand("listintegrations", "查看当前会话的订阅"),
             BotCommand("delintegration", "选择并取消订阅"),

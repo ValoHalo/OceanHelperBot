@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 from ocean_helper_bot.config import Settings
 from ocean_helper_bot.features.github_watcher.service import GitHubAPIError, GitHubWatcher
+from ocean_helper_bot.features.link_cleaner.management import cancel_menu
 
 REPOSITORY_PATTERN = re.compile(
     r"^(?:https?://github\.com/)?(?P<owner>[A-Za-z0-9_.-]+)/"
@@ -139,6 +140,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if message is None:
         return
     await message.reply_text(
+        "链接规则管理（仅限私聊，对所有会话生效）：\n"
+        "/addlink - 添加站点规则\n"
+        "/replacelink - 修改替换域名\n"
+        "/whitelist - 修改参数白名单\n"
+        "/links - 查看和管理规则\n\n"
         "GitHub 通知管理：\n"
         "/health - 检查机器人是否在线\n"
         "/newintegration - 选择并关注仓库\n"
@@ -237,6 +243,9 @@ async def delete_integration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _is_owner(update, context):
+        return
+    if await cancel_menu(update, context):
+        context.user_data.pop(MENU_KEY, None)
         return
     context.user_data.pop(MENU_KEY, None)
     if update.effective_message is not None:

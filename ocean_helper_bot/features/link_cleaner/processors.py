@@ -6,6 +6,8 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from ocean_helper_bot.features.link_cleaner.rules import DEFAULT_BY_HOST, apply_rule
+
 
 _DESKTOP_HOSTS = {
     "item.m.jd.com": "item.jd.com",
@@ -81,14 +83,14 @@ class JdProcessor:
     _hosts = {"3.cn", "item.jd.com", "item.m.jd.com", "mitem.jd.hk"}
     _path_pattern = re.compile(r"/(?:product/)?(\d{8,})\.html", re.IGNORECASE)
     _body_pattern = re.compile(
-        r"(?:item\.m?\.jd\.com/(?:product/)?|item\.jd\.hk/product/)(\d{8,})\.html",
+        r"(?:item\.m?\.jd\.com/(?:product/)?|item\.jd\.hk/product/)(\d{8,})\.html(?P<query>\?[^\s\"'<>\\]*)?",
         re.IGNORECASE,
     )
 
     def accepts(self, url: str) -> bool:
         return _host(url) in self._hosts
 
-    async def clean(self, url: str, client: httpx.AsyncClient) -> str | None:
+    async def clean(self, url: str, client: httpx.AsyncClient, *, preserve_parameters: bool = False) -> str | None:
         candidates = (url,)
         body = ""
         if _host(url) == "3.cn":
@@ -99,11 +101,15 @@ class JdProcessor:
         for candidate in reversed(candidates):
             match = self._path_pattern.search(urlsplit(candidate).path)
             if match:
+                if preserve_parameters:
+                    parsed = urlsplit(candidate)
+                    return urlunsplit(("https", "item.jd.com", f"/{match.group(1)}.html", parsed.query, parsed.fragment))
                 return f"https://item.jd.com/{match.group(1)}.html"
 
-        match = self._body_pattern.search(_decoded(body))
+        match = self._body_pattern.search(body) or self._body_pattern.search(_decoded(body))
         if match:
-            return f"https://item.jd.com/{match.group(1)}.html"
+            suffix = (match.group("query") or "") if preserve_parameters else ""
+            return f"https://item.jd.com/{match.group(1)}.html{suffix}"
         return None
 
 
@@ -126,27 +132,29 @@ class TaobaoProcessor:
     def accepts(self, url: str) -> bool:
         return _host(url) in self._short_hosts | self._item_hosts
 
-    async def clean(self, url: str, client: httpx.AsyncClient) -> str | None:
+    async def clean(self, url: str, client: httpx.AsyncClient, *, preserve_parameters: bool = False) -> str | None:
         candidates = (url,)
         body = ""
         if _host(url) in self._short_hosts:
             page = await _resolve(url, client)
             candidates = page.urls
-            body = _decoded(page.body.replace("\\/", "/"))
+            body = page.body.replace("\\/", "/")
 
         for candidate in reversed(candidates):
-            result = self._canonical_from_url(candidate)
+            result = self._canonical_from_url(candidate, preserve_parameters=preserve_parameters)
             if result:
                 return result
 
-        match = self._body_url_pattern.search(body)
+        match = self._body_url_pattern.search(body) or self._body_url_pattern.search(_decoded(body))
         if match:
-            return self._canonical_from_url(match.group(0))
+            return self._canonical_from_url(match.group(0), preserve_parameters=preserve_parameters)
         return None
 
     @staticmethod
-    def _canonical_from_url(url: str) -> str | None:
-        parsed = urlsplit(_decoded(url))
+    def _canonical_from_url(url: str, *, preserve_parameters: bool = False) -> str | None:
+        parsed = urlsplit(url)
+        if (parsed.hostname or "").lower() not in TaobaoProcessor._item_hosts:
+            parsed = urlsplit(_decoded(url))
         hostname = (parsed.hostname or "").lower()
         if hostname not in TaobaoProcessor._item_hosts:
             return None
@@ -156,7 +164,7 @@ class TaobaoProcessor:
             return None
         domain = "detail.tmall.com" if "tmall" in hostname else "item.taobao.com"
         kept_query = [("id", item_id)]
-        kept_query.extend((name, value) for name, value in query if name.lower() == "skuid")
+        kept_query.extend((name, value) for name, value in query if name != "id" and (preserve_parameters or name.lower() == "skuid"))
         return f"https://{domain}/item.htm?{urlencode(kept_query)}"
 
 
@@ -172,7 +180,7 @@ class BilibiliProcessor:
     def accepts(self, url: str) -> bool:
         return _host(url) in self._hosts
 
-    async def clean(self, url: str, client: httpx.AsyncClient) -> str | None:
+    async def clean(self, url: str, client: httpx.AsyncClient, *, preserve_parameters: bool = False) -> str | None:
         candidates = (url,)
         body = ""
         if _host(url) == "b23.tv":
@@ -183,7 +191,7 @@ class BilibiliProcessor:
         for candidate in reversed(candidates):
             canonical_url = self._canonical_from_url(candidate, url)
             if canonical_url:
-                return await TRACKING_PARAMETER_PROCESSOR.clean(canonical_url, client)
+                return canonical_url if preserve_parameters else apply_rule(canonical_url, DEFAULT_BY_HOST["www.bilibili.com"])
 
         body = body.replace("\\/", "/")
         match = self._body_video_pattern.search(body) or self._body_video_pattern.search(
@@ -194,7 +202,7 @@ class BilibiliProcessor:
                 f"https://www.bilibili.com{match.group(0)}", url
             )
             if canonical_url:
-                return await TRACKING_PARAMETER_PROCESSOR.clean(canonical_url, client)
+                return canonical_url if preserve_parameters else apply_rule(canonical_url, DEFAULT_BY_HOST["www.bilibili.com"])
         return None
 
     @staticmethod
@@ -318,37 +326,16 @@ class SocialPreviewProcessor:
         "m.twitter.com": "fxtwitter.com",
         "mobile.twitter.com": "fxtwitter.com",
     }
-    _twitter_preview_hosts = {"fixupx.com", "fxtwitter.com"}
-    _twitter_tracking_names = {"s", "t"}
 
     def accepts(self, url: str) -> bool:
         return _host(url) in self._preview_hosts and urlsplit(url).scheme in {"http", "https"}
 
     async def clean(self, url: str, client: httpx.AsyncClient) -> str | None:
+        del client
         parsed = urlsplit(url)
         if parsed.username is not None or parsed.password is not None:
             return None
-
-        preview_host = self._preview_hosts[_host(url)]
-        netloc = preview_host
-        if parsed.port is not None:
-            netloc += f":{parsed.port}"
-
-        query = parsed.query
-        if preview_host in self._twitter_preview_hosts:
-            original_query = parse_qsl(query, keep_blank_values=True)
-            clean_query = [
-                (name, value)
-                for name, value in original_query
-                if name.lower() not in self._twitter_tracking_names
-            ]
-            if clean_query != original_query:
-                query = urlencode(clean_query, doseq=True)
-
-        preview_url = urlunsplit(
-            (parsed.scheme, netloc, parsed.path, query, parsed.fragment)
-        )
-        return await TRACKING_PARAMETER_PROCESSOR.clean(preview_url, client)
+        return apply_rule(url, DEFAULT_BY_HOST[_host(url)])
 
 
 TRACKING_PARAMETER_PROCESSOR = TrackingParameterProcessor()
